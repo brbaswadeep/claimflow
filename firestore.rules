@@ -1,0 +1,18 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId} {
+      // Users can securely read/update their own profile
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    match /companies/{companyId} {
+      // Authenticated users can read company info
+      allow read: if request.auth != null;
+    }
+    match /{document=**} {
+      // Deny all other collections by default until rules are created
+      allow read, write: if false; 
+    }
+  }
+}
