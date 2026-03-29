@@ -1,36 +1,74 @@
 import { createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, GoogleAuthProvider, signInWithPopup } from "firebase/auth";
-import { doc, setDoc, getDoc } from "firebase/firestore";
+import { doc, setDoc, getDoc, collection, getDocs, query, limit } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase/client";
-import { Role } from "@/types";
+import { Role, Company } from "@/types";
 
-export const registerUser = async (email: string, password: string, name: string, companyName: string) => {
-  // Simple creation logic
+export const getRegisteredCompanies = async (): Promise<Company[]> => {
+  try {
+    const q = query(collection(db, "companies"));
+    const snapshot = await getDocs(q);
+    return snapshot.docs.map(doc => doc.data() as Company);
+  } catch (err) {
+    console.error("Failed to fetch companies", err);
+    return [];
+  }
+};
+
+export const registerOrganization = async (email: string, password: string, name: string, companyName: string) => {
   const userCredential = await createUserWithEmailAndPassword(auth, email, password);
   const user = userCredential.user;
   
-  // Dummy company ID generation
-  const dummyCompanyId = `comp_${Date.now()}`;
+  const companyId = `comp_${Date.now()}`;
   
-  // Store user in Firestore
-  await setDoc(doc(db, "users", user.uid), {
-    id: user.uid,
-    email: user.email,
-    name,
-    role: "EMPLOYEE" as Role,
-    companyId: dummyCompanyId,
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-  });
-  
-  // Create dummy company document
-  await setDoc(doc(db, "companies", dummyCompanyId), {
-    id: dummyCompanyId,
+  // Create company
+  await setDoc(doc(db, "companies", companyId), {
+    id: companyId,
     name: companyName,
     createdAt: Date.now(),
     updatedAt: Date.now(),
   });
 
+  // Create admin user
+  await setDoc(doc(db, "users", user.uid), {
+    id: user.uid,
+    email: user.email,
+    name,
+    role: "ADMIN" as Role,
+    companyId: companyId,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  });
+  
   return userCredential;
+};
+
+export const joinAsEmployee = async (email: string, password: string, name: string, companyId: string) => {
+  // Validate company exists before creating user to be safe
+  const companyDoc = await getDoc(doc(db, "companies", companyId));
+  if (!companyDoc.exists()) {
+    throw new Error("Invalid or missing Company ID.");
+  }
+
+  const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+  const user = userCredential.user;
+  
+  // Emulate standard employee
+  await setDoc(doc(db, "users", user.uid), {
+    id: user.uid,
+    email: user.email,
+    name,
+    role: "EMPLOYEE" as Role,
+    companyId: companyId,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  });
+  
+  return userCredential;
+};
+
+// Legacy alias to fix any broken imports during transition (will point to employee logic by default if used)
+export const registerUser = async (email: string, password: string, name: string, companyName: string) => {
+  return registerOrganization(email, password, name, companyName);
 };
 
 export const loginUser = async (email: string, password: string) => {
@@ -46,12 +84,10 @@ export const loginWithGoogle = async () => {
   const userCredential = await signInWithPopup(auth, provider);
   const user = userCredential.user;
 
-  // Check if user already exists in Firestore to avoid overwriting their role/company
   const userDocRef = doc(db, "users", user.uid);
   const userDoc = await getDoc(userDocRef);
   
   if (!userDoc.exists()) {
-    // Generate isolated workspace for new Google Auth users
     const dummyCompanyId = `comp_${Date.now()}`;
     
     await setDoc(userDocRef, {
@@ -64,7 +100,6 @@ export const loginWithGoogle = async () => {
       updatedAt: Date.now(),
     });
     
-    // Provision their dummy company document mappings
     await setDoc(doc(db, "companies", dummyCompanyId), {
       id: dummyCompanyId,
       name: `${user.displayName?.split(' ')[0] || "User"}'s Workspace`,

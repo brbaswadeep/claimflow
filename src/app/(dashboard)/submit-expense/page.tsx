@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useAuth } from "@/features/auth/AuthProvider";
 import { db } from "@/lib/firebase/client";
 import { collection, doc, setDoc, getDoc } from "firebase/firestore";
 import { useRouter } from "next/navigation";
 import { UploadCloud, CheckCircle2, Loader2, FileImage } from "lucide-react";
+import { calculateFraudScore } from "@/lib/services/fraudDetection";
 
 export default function SubmitExpensePage() {
   const { appUser } = useAuth();
@@ -16,12 +17,26 @@ export default function SubmitExpensePage() {
   const [date, setDate] = useState("");
   const [category, setCategory] = useState("TRAVEL");
   const [receiptUrl, setReceiptUrl] = useState<string | null>(null);
+  const [base64File, setBase64File] = useState<string | null>(null);
   
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [isOffline, setIsOffline] = useState(false);
+
+  useEffect(() => {
+    const handleOnline = () => setIsOffline(false);
+    const handleOffline = () => setIsOffline(true);
+    setIsOffline(!navigator.onLine);
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    }
+  }, []);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -32,33 +47,38 @@ export default function SubmitExpensePage() {
     setUploadProgress(0);
 
     try {
-      // Bypass Firebase Storage entirely explicitly using Base64 encoding
       const reader = new FileReader();
       
       reader.onload = async (event) => {
         try {
           const base64String = (event.target?.result as string).split(',')[1];
+          setBase64File(base64String);
           setUploadProgress(100); 
 
-          const res = await fetch('/api/ocr', {
+          if (!navigator.onLine) {
+            setError("You are offline. AI extraction requires an internet connection. You can enter details manually, and it will be queued.");
+            setReceiptUrl("offline-mode-placeholder");
+            setIsScanning(false);
+            return;
+          }
+
+          const res = await fetch('/api/extract-receipt', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ base64Image: base64String })
           });
 
-          const ocrData = await res.json();
+          const { data, error: extractError } = await res.json();
           
-          if (ocrData.amount) setAmount(ocrData.amount.toString());
-          if (ocrData.merchant) setMerchant(ocrData.merchant.substring(0, 50));
-          if (ocrData.date) setDate(ocrData.date);
-          
-          if (ocrData.error) {
-            setError("OCR Extraction partially failed. Please enter details manually.");
+          if (!extractError && data) {
+            if (data.amount) setAmount(data.amount.toString());
+            if (data.merchant) setMerchant(data.merchant.substring(0, 50));
+            if (data.date && data.date !== "Unknown") setDate(data.date);
+          } else {
+            setError("OCR Extraction failed. Please enter details manually.");
           }
           
-          // Since we aren't storing the image, mock a successful receipt attachment state
-          setReceiptUrl("base64-bypassed");
-          
+          setReceiptUrl("vision-ai-extracted");
         } catch (ocrErr) {
           console.error("OCR Routing failed", ocrErr);
           setError("Vision API service failed to respond. Please enter manually.");
@@ -73,9 +93,7 @@ export default function SubmitExpensePage() {
         setIsScanning(false);
       };
 
-      // Start reading the file as a Data URL
       reader.readAsDataURL(file);
-
     } catch (err: any) {
       setError(err.message);
       setIsScanning(false);
@@ -89,18 +107,38 @@ export default function SubmitExpensePage() {
     setError(null);
 
     try {
-      const companyDoc = await getDoc(doc(db, "companies", appUser.companyId));
-      const companyName = companyDoc.exists() ? companyDoc.data().name : "Unknown Company";
+      const expenseDateMs = new Date(date).getTime();
+      const numAmount = parseFloat(amount);
+      
+      let companyName = "Unknown Company";
+      if (!isOffline) {
+        try {
+          const companyDoc = await getDoc(doc(db, "companies", appUser.companyId));
+          companyName = companyDoc.exists() ? companyDoc.data().name : "Unknown Company";
+        } catch(err) { /* ignore if offline or failing */ }
+      }
+
+      // 1. Calculate Fraud Score using our lightweight rule engine
+      let fScore = 0;
+      if (!isOffline) {
+        fScore = await calculateFraudScore({
+          amount: numAmount,
+          merchant,
+          date: expenseDateMs,
+          userId: appUser.id
+        });
+      }
 
       const expenseRef = doc(collection(db, "expenses"));
       const newExpense = {
         id: expenseRef.id,
-        amount: parseFloat(amount),
+        amount: numAmount,
         merchant,
-        date: new Date(date).getTime(),
+        date: expenseDateMs,
         status: "PENDING",
         categoryId: category,
         receiptUrl: receiptUrl || null,
+        fraudScore: fScore,
         
         userId: appUser.id,
         companyId: appUser.companyId,
@@ -112,7 +150,13 @@ export default function SubmitExpensePage() {
         updatedAt: Date.now(),
       };
 
-      await setDoc(expenseRef, newExpense);
+      if (isOffline) {
+        const queue = JSON.parse(localStorage.getItem("claimflow_offline_queue") || "[]");
+        queue.push(newExpense);
+        localStorage.setItem("claimflow_offline_queue", JSON.stringify(queue));
+      } else {
+        await setDoc(expenseRef, newExpense);
+      }
       
       setSuccess(true);
       setTimeout(() => {
@@ -129,11 +173,15 @@ export default function SubmitExpensePage() {
 
   if (success) {
     return (
-      <div className="flex items-center justify-center h-full">
+      <div className="flex items-center justify-center h-[70vh]">
         <div className="text-center">
           <CheckCircle2 className="w-16 h-16 text-green-500 mx-auto mb-4" />
-          <h2 className="text-2xl font-bold text-gray-800">Expense Submitted!</h2>
-          <p className="text-gray-500 mt-2">Redirecting to your dashboard...</p>
+          <h2 className="text-2xl font-bold text-gray-800">
+            {isOffline ? "Expense Saved Offline!" : "Expense Submitted!"}
+          </h2>
+          <p className="text-gray-500 mt-2">
+            {isOffline ? "It will sync when you are back online." : "Redirecting to your dashboard..."}
+          </p>
         </div>
       </div>
     );
@@ -142,12 +190,15 @@ export default function SubmitExpensePage() {
   return (
     <div className="max-w-4xl mx-auto py-8">
       <div className="mb-8">
-        <h1 className="text-3xl font-bold text-gray-900">Submit an Expense</h1>
+        <h1 className="text-3xl font-bold text-gray-900 flex items-center gap-3">
+          Submit an Expense
+          {isOffline && <span className="text-xs bg-orange-100 text-orange-700 font-semibold px-2 py-1 rounded">OFFLINE MODE</span>}
+        </h1>
         <p className="text-gray-500 mt-1">Upload a receipt image or manually enter your expenses.</p>
       </div>
 
       {error && (
-        <div className="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl mb-6">
+        <div className="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl mb-6 text-sm">
           {error}
         </div>
       )}
@@ -175,10 +226,10 @@ export default function SubmitExpensePage() {
               </p>
             </div>
           ) : receiptUrl ? (
-            <div className="flex flex-col items-center">
-              <FileImage className="w-10 h-10 text-green-500 mb-3" />
-              <h3 className="font-semibold text-green-700">Receipt Attached</h3>
-              <p className="text-xs text-gray-400 mt-1">Click to replace image</p>
+            <div className="flex flex-col items-center border p-2 rounded-lg bg-green-50 border-green-200">
+              <FileImage className="w-10 h-10 text-green-600 mb-2" />
+              <h3 className="font-semibold text-green-800 text-sm">Receipt Scanned via AI</h3>
+              <p className="text-[10px] text-green-700 mt-1 cursor-pointer underline">Click to upload another</p>
             </div>
           ) : (
             <div className="flex flex-col items-center">
@@ -190,51 +241,51 @@ export default function SubmitExpensePage() {
         </div>
 
         {/* Right Column: Form */}
-        <div className="col-span-1 md:col-span-2 bg-white rounded-xl shadow-sm border p-6">
+        <div className="col-span-1 md:col-span-2 bg-white rounded-xl shadow-sm border p-6 text-sm">
           <form onSubmit={handleSubmit} className="space-y-5">
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Amount (₹)</label>
+                <label className="block font-medium text-gray-700 mb-1">Amount (₹)</label>
                 <input 
                   type="number" 
                   step="0.01"
                   value={amount} 
                   onChange={(e) => setAmount(e.target.value)} 
                   required 
-                  className="w-full border rounded-lg px-3 py-2 text-gray-800 focus:ring-2 focus:ring-blue-500 focus:outline-none" 
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-gray-800 focus:ring-2 focus:ring-blue-500 focus:outline-none" 
                   placeholder="0.00"
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Date incurred</label>
+                <label className="block font-medium text-gray-700 mb-1">Date incurred</label>
                 <input 
                   type="date" 
                   value={date} 
                   onChange={(e) => setDate(e.target.value)} 
                   required 
-                  className="w-full border rounded-lg px-3 py-2 text-gray-800 focus:ring-2 focus:ring-blue-500 focus:outline-none" 
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-gray-800 focus:ring-2 focus:ring-blue-500 focus:outline-none" 
                 />
               </div>
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Merchant Name</label>
+              <label className="block font-medium text-gray-700 mb-1">Merchant Name</label>
               <input 
                 type="text" 
                 value={merchant} 
                 onChange={(e) => setMerchant(e.target.value)} 
                 required 
-                className="w-full border rounded-lg px-3 py-2 text-gray-800 focus:ring-2 focus:ring-blue-500 focus:outline-none" 
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-gray-800 focus:ring-2 focus:ring-blue-500 focus:outline-none" 
                 placeholder="E.g., Amazon, Uber, Taj Hotels"
               />
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Category</label>
+              <label className="block font-medium text-gray-700 mb-1">Category</label>
               <select 
                 value={category} 
                 onChange={(e) => setCategory(e.target.value)}
-                className="w-full border rounded-lg px-3 py-2 text-gray-800 focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white"
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-gray-800 focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white font-medium"
               >
                 <option value="TRAVEL">Travel & Transport</option>
                 <option value="LODGING">Lodging & Hotels</option>
@@ -248,9 +299,9 @@ export default function SubmitExpensePage() {
               <button 
                 type="submit" 
                 disabled={isSubmitting || isScanning}
-                className="px-6 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition disabled:opacity-50"
+                className="px-6 py-2.5 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition disabled:opacity-50 text-sm"
               >
-                {isSubmitting ? "Submitting..." : "Submit Expense"}
+                {isSubmitting ? "Saving..." : "Submit Expense"}
               </button>
             </div>
           </form>

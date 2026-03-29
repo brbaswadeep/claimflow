@@ -5,7 +5,8 @@ import { collection, query, where, onSnapshot, doc, writeBatch } from "firebase/
 import { db } from "@/lib/firebase/client";
 import { useAuth } from "@/features/auth/AuthProvider";
 import { Expense } from "@/types";
-import { CheckCircle2, XCircle, AlertTriangle, FileImage } from "lucide-react";
+import { CheckCircle2, XCircle, AlertTriangle, FileImage, ShieldAlert, ShieldCheck } from "lucide-react";
+import { simulateUPIPayout } from "@/lib/services/payoutSimulator";
 
 export default function ApprovalsPage() {
   const { appUser } = useAuth();
@@ -67,6 +68,15 @@ export default function ApprovalsPage() {
       });
 
       await batch.commit();
+
+      // Trigger UPI Payout simulation if approved
+      if (decision === 'APPROVED') {
+        const txn = await simulateUPIPayout(expense);
+        if (txn) {
+          console.log("Mock UPI Transaction Generated:", txn);
+        }
+      }
+
       setComment("");
       setSelectedExpense(null);
 
@@ -109,7 +119,14 @@ export default function ApprovalsPage() {
           </div>
         ) : (
           <ul className="divide-y">
-            {pendingExpenses.map((expense) => (
+            {pendingExpenses.map((expense) => {
+               const fScore = expense.fraudScore || 0;
+               let fraudColor = "bg-green-100 text-green-700";
+               let FraudIcon = ShieldCheck;
+               if (fScore >= 50 && fScore < 80) fraudColor = "bg-amber-100 text-amber-700";
+               if (fScore >= 80) { fraudColor = "bg-red-100 text-red-700"; FraudIcon = ShieldAlert; }
+
+               return (
               <li key={expense.id} className="p-6 hover:bg-gray-50/50 transition duration-150">
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
                   
@@ -123,9 +140,18 @@ export default function ApprovalsPage() {
                           High Value
                         </span>
                       )}
+                      
+                      {/* AI Fraud Score Badge */}
+                      <span className={`px-2 py-0.5 text-xs font-bold rounded flex items-center ${fraudColor}`}>
+                          <FraudIcon className="w-3 h-3 mr-1" />
+                          Risk: {fScore}/100
+                      </span>
+
                     </div>
-                    <p className="text-sm text-gray-800 font-medium mb-1">
-                      {expense.merchant} <span className="text-gray-400 mx-2">•</span> <span className="text-gray-500 font-normal">{new Date(expense.createdAt).toLocaleDateString()}</span>
+                    <p className="text-sm text-gray-800 font-medium mb-1 flex items-center">
+                      {expense.merchant || "Unknown Merchant"} 
+                      <span className="text-gray-400 mx-2">•</span> 
+                      <span className="text-gray-500 font-normal">{expense.date ? new Date(expense.date).toLocaleDateString() : 'No date'}</span>
                     </p>
                     <p className="text-sm text-gray-600">
                       Submitted by <span className="font-semibold text-gray-900">{expense.userName || expense.userEmail}</span> 
@@ -134,7 +160,7 @@ export default function ApprovalsPage() {
                   </div>
 
                   {/* Receipt Preview Logic */}
-                  {expense.receiptUrl && expense.receiptUrl !== "base64-bypassed" && (
+                  {expense.receiptUrl && expense.receiptUrl !== "base64-bypassed" && expense.receiptUrl !== "vision-ai-extracted" && expense.receiptUrl !== "offline-mode-placeholder" && (
                      <div className="hidden md:flex w-32 h-20 bg-gray-50 border border-gray-200 rounded items-center justify-center text-xs text-gray-500 hover:bg-gray-100 transition cursor-pointer shadow-sm">
                        <a href={expense.receiptUrl} target="_blank" rel="noreferrer" className="flex flex-col items-center">
                          <FileImage className="w-5 h-5 mb-1" />
@@ -142,9 +168,14 @@ export default function ApprovalsPage() {
                        </a>
                      </div>
                   )}
-                  {expense.receiptUrl === "base64-bypassed" && (
-                      <div className="hidden md:flex w-32 h-20 bg-blue-50 border border-blue-100 rounded items-center justify-center text-xs text-blue-500 text-center px-3 shadow-sm">
-                        Base64 Extraction Format
+                  {expense.receiptUrl === "vision-ai-extracted" && (
+                      <div className="hidden md:flex w-32 h-20 bg-blue-50 border border-blue-100 rounded items-center justify-center text-xs text-blue-600 text-center px-3 shadow-sm font-medium">
+                        Vision AI Scanned
+                      </div>
+                  )}
+                  {expense.receiptUrl === "offline-mode-placeholder" && (
+                      <div className="hidden md:flex w-32 h-20 bg-orange-50 border border-orange-200 rounded items-center justify-center text-[11px] text-orange-600 text-center px-1 shadow-sm font-medium">
+                        Offline Match
                       </div>
                   )}
 
@@ -199,7 +230,7 @@ export default function ApprovalsPage() {
 
                 </div>
               </li>
-            ))}
+            )})}
           </ul>
         )}
       </div>
