@@ -5,7 +5,7 @@ import { Send, Bot, User } from "lucide-react";
 
 type Message = {
   role: "user" | "assistant";
-  content: String;
+  content: string;
 };
 
 export default function ChatbotPage() {

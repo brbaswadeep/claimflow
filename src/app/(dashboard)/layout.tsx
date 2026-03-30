@@ -96,7 +96,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
             )}
           </ul>
           
-          <div className="mt-auto pt-6 border-t border-gray-100">
+          <div className="mt-auto pt-6 pb-12 border-t border-gray-100">
             {/* User Profile Overview */}
             <div className="mb-4 px-2">
               <div className="flex items-center">

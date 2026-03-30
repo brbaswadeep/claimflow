@@ -2,14 +2,14 @@ import Object from "node:util"; // just for unused reference
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 
-// Initialize OpenAI client strictly pointing to NVIDIA NIM
-const openai = new OpenAI({
-  apiKey: process.env.NVIDIA_API_KEY,
-  baseURL: "https://integrate.api.nvidia.com/v1",
-});
-
 export async function POST(req: Request) {
   try {
+    // Initialize OpenAI client strictly pointing to NVIDIA NIM inside the handler
+    const openai = new OpenAI({
+      apiKey: process.env.NVIDIA_API_KEY,
+      baseURL: "https://integrate.api.nvidia.com/v1",
+    });
+
     const { base64Image } = await req.json();
 
     if (!base64Image) {

@@ -109,7 +109,7 @@ export default function AnalyticsPage() {
                       <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                     ))}
                   </Pie>
-                  <Tooltip formatter={(value: number) => `₹${value.toLocaleString()}`} />
+                  <Tooltip formatter={(value: any) => `₹${Number(value).toLocaleString()}`} />
                   <Legend />
                 </PieChart>
               </ResponsiveContainer>
@@ -137,7 +137,7 @@ export default function AnalyticsPage() {
                       <Cell key={`cell-${index}`} fill={(STATUS_COLORS as any)[entry.name] || '#cbd5e1'} />
                     ))}
                   </Pie>
-                  <Tooltip formatter={(value: number) => `${value} claims`} />
+                  <Tooltip formatter={(value: any) => `${value} claims`} />
                   <Legend />
                 </PieChart>
               </ResponsiveContainer>
@@ -163,7 +163,7 @@ export default function AnalyticsPage() {
                   />
                   <Tooltip 
                     cursor={{fill: '#f3f4f6'}}
-                    formatter={(value: number) => `₹${value.toLocaleString()}`} 
+                    formatter={(value: any) => `₹${Number(value).toLocaleString()}`} 
                   />
                   <Bar dataKey="amount" fill="#3b82f6" radius={[4, 4, 0, 0]} barSize={40} />
                 </BarChart>

@@ -44,7 +44,7 @@ export const calculateFraudScore = async (expense: FraudCheckParams): Promise<nu
       // Filter by date post-query to keep index requirements simple
       const duplicates = querySnapshot.docs.filter(doc => {
         const data = doc.data();
-        return data.date >= thirtyDaysAgo && data.date <= expense.date;
+        return data.date >= thirtyDaysAgo && data.date <= expense.date!;
       });
 
       if (duplicates.length > 0) {

@@ -14,14 +14,24 @@ import {
 } from "lucide-react";
 
 export default function DashboardPage() {
-  const { appUser } = useAuth();
+  const { appUser, loading: authLoading } = useAuth();
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!appUser) return;
+    if (authLoading) return;
+    
+    if (!appUser) {
+      setLoading(false);
+      return;
+    }
 
     // Fetch expenses tightly bound to the user's company
+    if (!appUser.companyId) {
+      setLoading(false);
+      return;
+    }
+
     const q = query(
       collection(db, "expenses"),
       where("companyId", "==", appUser.companyId)

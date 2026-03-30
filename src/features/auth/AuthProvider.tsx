@@ -2,7 +2,7 @@
 
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { onAuthStateChanged, User as FirebaseUser } from "firebase/auth";
-import { doc, getDoc } from "firebase/firestore";
+import { doc, onSnapshot, DocumentSnapshot, FirestoreError } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase/client";
 import { User as AppUser } from "@/types";
 
@@ -24,27 +24,40 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+    let authUnsubscribe: () => void;
+    let userDocUnsubscribe: () => void;
+
+    authUnsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
       setUser(firebaseUser);
       if (firebaseUser) {
-        try {
-          const userDoc = await getDoc(doc(db, "users", firebaseUser.uid));
-          if (userDoc.exists()) {
-            setAppUser(userDoc.data() as AppUser);
-          } else {
+        // Listen to the user document in real-time to avoid race conditions with signup
+        userDocUnsubscribe = onSnapshot(
+          doc(db, "users", firebaseUser.uid),
+          (userDoc: DocumentSnapshot) => {
+            if (userDoc.exists()) {
+              setAppUser(userDoc.data() as AppUser);
+            } else {
+              setAppUser(null);
+            }
+            setLoading(false);
+          },
+          (error: FirestoreError) => {
+            console.error("Error listening to user data:", error);
             setAppUser(null);
+            setLoading(false);
           }
-        } catch (error) {
-          console.error("Error fetching user data:", error);
-          setAppUser(null);
-        }
+        );
       } else {
         setAppUser(null);
+        setLoading(false);
+        if (userDocUnsubscribe) userDocUnsubscribe();
       }
-      setLoading(false);
     });
 
-    return () => unsubscribe();
+    return () => {
+      if (authUnsubscribe) authUnsubscribe();
+      if (userDocUnsubscribe) userDocUnsubscribe();
+    };
   }, []);
 
   return (
